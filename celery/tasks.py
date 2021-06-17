@@ -300,6 +300,8 @@ def positioningScene(activity):
 		sat = 'CBERS-4A'
 	if activity['sat'] == 'CBERS4':
 		sat = 'CBERS-4'
+	if activity['sat'] == 'AMAZONIA1':
+		sat = 'AMAZONIA-1'
 	if sat is None: 
 		activity['status'] = 'ERROR'
 		activity['message'] = 'Not possible for {}'.format(activity['sat'])
@@ -312,6 +314,9 @@ def positioningScene(activity):
 		bandnumber = bandmap[activity['band']]
 	if activity['inst'] == 'WFI' or activity['inst'] == 'AWFI':
 		bandmap = {'blue':13,'green':14,'red':15,'nir':16}
+		bandnumber = bandmap[activity['band']]
+	if activity['inst'] == 'WFI' and activity['sat'] == 'AMAZONIA1':
+		bandmap = {'blue':1,'green':2,'red':3,'nir':4}
 		bandnumber = bandmap[activity['band']]
 	if activity['inst'] == 'WPM':
 		bandmap = {'pan':0,'blue':1,'green':2,'red':3,'nir':4}
@@ -437,6 +442,12 @@ ACTIVE = 1 ORDER BY KERNEL_ID".format(ullat,lrlat,lrlon,ullon,satc,instc,bandc)
 	test = tform(src[1])
 	itest = tform.inverse(test)
 	logging.warning('positioningScene - AffineTransform test {} -> {} -> {}'.format(src[1],test,itest))
+	test = numpy.array([(fulx+furx)/2.,(fury+flry)/2.])
+	itest = tform(test)
+	logging.warning('positioningScene - AffineTransform center {} -> {}'.format(test,itest))
+	test = numpy.array([174821.,8159040.])
+	itest = tform(test)
+	logging.warning('positioningScene - AffineTransform 3007 {} -> {}'.format(test,itest))
 
 # Correlation will be done on 8 bit enhanced images. Images may be resampled for efficiency purpose
 	driver = gdal.GetDriverByName('GTiff')
@@ -563,6 +574,7 @@ ACTIVE = 1 ORDER BY KERNEL_ID".format(ullat,lrlat,lrlon,ullon,satc,instc,bandc)
 
 # Get some parameters from xml file
 	xmlfile = activity['metadata'][activity['band']]
+	processingTime = None
 	if os.path.exists(xmlfile):
 		with open(xmlfile) as fp:
 			f = fp.readlines()
@@ -573,14 +585,26 @@ ACTIVE = 1 ORDER BY KERNEL_ID".format(ullat,lrlat,lrlon,ullon,satc,instc,bandc)
 				if 'viewing' in xml['prdf']:
 					CenterTime = xml['prdf']['viewing']['center'].replace('T',' ')[:19]
 					activity['CenterTime'] = CenterTime
+				if 'leftCamera' in xml['prdf'] and 'viewing' in xml['prdf']['leftCamera']:
+					CenterTime = xml['prdf']['leftCamera']['viewing']['center'].replace('T',' ')[:19]
+					activity['CenterTime'] = CenterTime
 				if 'orientationAngle' in xml['prdf']:
 					orientationAngle = float(xml['prdf']['orientationAngle']['degree'])
 					orientationAngle += float(xml['prdf']['orientationAngle']['minute'])/60.
 					orientationAngle += float(xml['prdf']['orientationAngle']['second'])/3600.
 					orientationAngle = numpy.radians(-orientationAngle)
 					logging.warning( 'positioningScene - {} orientationAngle - {}'.format(activity['sceneid'],orientationAngle))
+				if 'leftCamera' in xml['prdf'] and 'orientationAngle' in xml['prdf']['leftCamera']:
+					orientationAngle = float(xml['prdf']['leftCamera']['orientationAngle']['degree'])
+					orientationAngle += float(xml['prdf']['leftCamera']['orientationAngle']['minute'])/60.
+					orientationAngle += float(xml['prdf']['leftCamera']['orientationAngle']['second'])/3600.
+					orientationAngle = numpy.radians(-orientationAngle)
+					logging.warning( 'positioningScene - {} orientationAngle - {}'.format(activity['sceneid'],orientationAngle))
 				if 'image' in xml['prdf']:
 					processingTime = xml['prdf']['image']['processingTime'].replace('T',' ')[:19]
+				if 'leftCamera' in xml['prdf'] and 'image' in xml['prdf']['leftCamera']:
+					processingTime = xml['prdf']['leftCamera']['image']['processingTime'].replace('T',' ')[:19]
+
 	else:
 		activity['status'] = 'ERROR'
 		activity['message'] = 'xmlfile {} not exist'.format(xmlfile)
@@ -622,8 +646,8 @@ ACTIVE = 1 ORDER BY KERNEL_ID".format(ullat,lrlat,lrlon,ullon,satc,instc,bandc)
 	k_keyval['row'] = activity['row']
 	positioningdate = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 	k_keyval['positioningdate'] = positioningdate
-	k_keyval['centertime'] = activity['CenterTime']
-	k_keyval['processingdate'] = processingTime
+	if 'CenterTime'in activity: k_keyval['centertime'] = activity['CenterTime']
+	if processingTime is not None: k_keyval['processingdate'] = processingTime
 
 # Create a raster to store originals GCPs in exact position
 	rasterO = numpy.zeros(raster.shape, dtype=numpy.uint8)
@@ -765,7 +789,8 @@ ACTIVE = 1 ORDER BY KERNEL_ID".format(ullat,lrlat,lrlon,ullon,satc,instc,bandc)
 				err_alongs.append(err_along)
 				err_xs.append(err_x)
 				err_ys.append(err_y)
-				logging.warning('positioningScene - collin {}'.format(collin))
+				logging.warning('positioningScene - AffineTransform collin {},{} -> {} {} {}'.format(sx,sy,collin,col,lin))
+
 				k_keyval['kernelid'] = row[0]
 				k_keyval['correlation'] = max_correl
 				k_keyval['kernel_x'] = kx
@@ -810,7 +835,9 @@ ACTIVE = 1 ORDER BY KERNEL_ID".format(ullat,lrlat,lrlon,ullon,satc,instc,bandc)
 	tifdirname = os.path.dirname(tifname)
 	if not os.path.exists(tifdirname):
 		os.makedirs(tifdirname)
+	logging.warning('positioningScene - GCPO file - {} {}'.format(tifname,activity['savekernels']))
 	if activity['savekernels'] is not None:
+		logging.warning('positioningScene - saving GCPO file - {} {}'.format(tifname,activity['savekernels']))
 		tifdataset = driver.Create( tifname, rasterO.shape[1], rasterO.shape[0], 1, gdal.GDT_Byte , options = ['COMPRESS=LZW'])
 		tifdataset.SetGeoTransform(geotransform)
 		tifdataset.SetProjection(projection)
@@ -823,7 +850,9 @@ ACTIVE = 1 ORDER BY KERNEL_ID".format(ullat,lrlat,lrlon,ullon,satc,instc,bandc)
 	tifdirname = os.path.dirname(tifname)
 	if not os.path.exists(tifdirname):
 		os.makedirs(tifdirname)
+	logging.warning('positioningScene - GCPT file - {} {}'.format(tifname,activity['savekernels']))
 	if activity['savekernels'] is not None:
+		logging.warning('positioningScene - saving GCPT file - {} {}'.format(tifname,activity['savekernels']))
 		tifdataset = driver.Create( tifname, rasterT.shape[1], rasterT.shape[0], 1, gdal.GDT_Byte , options = ['COMPRESS=LZW'])
 		tifdataset.SetGeoTransform(geotransform)
 		tifdataset.SetProjection(projection)
@@ -1891,6 +1920,15 @@ def publishOneMS3(activity):
 						result['Scene']['CenterTime'] = CenterTime
 						result['Scene']['StartTime'] = StartTime
 						result['Scene']['StopTime'] = StopTime
+					if 'leftCamera' in xml['prdf'] and 'viewing' in xml['prdf']['leftCamera']:
+						StartTime = xml['prdf']['leftCamera']['viewing']['begin'].replace('T',' ')[:19]
+						CenterTime = xml['prdf']['leftCamera']['viewing']['center'].replace('T',' ')[:19]
+						StopTime = xml['prdf']['leftCamera']['viewing']['end'].replace('T',' ')[:19]
+						result['Scene']['Date'] = CenterTime[:10]
+						result['Scene']['CenterTime'] = CenterTime
+						result['Scene']['StartTime'] = StartTime
+						result['Scene']['StopTime'] = StopTime
+
 					if 'revolutionNumber' in xml['prdf']:
 						revolutionNumber = xml['prdf']['revolutionNumber']
 						#result['Scene']['Orbit'] = int(revolutionNumber)

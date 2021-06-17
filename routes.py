@@ -60,8 +60,8 @@ def decodeDRDFilename(drdfilename):
 		return (sat,inst,date,calendardate,year,jday)
 
 	if (parts[0].find('CBERS') == 0 and parts[1].find('4') == 0) or parts[0].find('AMAZONIA') == 0 :
-		if len(parts) > 10:
-			return (sat,inst,date,calendardate,year,jday)
+#		if len(parts) > 11:
+#			return (sat,inst,date,calendardate,year,jday)
 		sat = parts[0]+parts[1]
 		inst = parts[2]
 		calendardate = parts[4]+'-'+parts[5]+'-'+parts[6].split('.')[0]
@@ -259,21 +259,30 @@ def traverse(basicactivity, dispatcher = None, extension = 'tif'):
 						logging.warning('traverse - {} {} lenpngs {}'.format(activity['sceneid'],template,len(pngs)))
 						if len(pngs) > 0:
 							activity['pngname'] = pngs[0]
+						else:
+							if 'pngname' in activity: del activity['pngname']
+
 						for band,bandtemplate in config['publish'][rp][inst].items():
-# Check if this is necessary							if basicactivity['band'] is not None and basicactivity['band'] != band: continue
 							template = '{}/*{}'.format(levdatum,bandtemplate)
 							if extension == 'zip':
 								template += '.'+extension
 							tiffs = glob.glob(template)
 							logging.warning('traverse - {} {} tiffs {}'.format(band,template,len(tiffs)))
-							if len(tiffs) > 0:
+			
+							if len(tiffs) == 1:
 								activity['files'][band] = filestructure[basicactivity['sat']][bym][bdrd][bpr][blevdatum][rp]['files'][band] = tiffs[0]
 								xmlfile = filestructure[basicactivity['sat']][bym][bdrd][bpr][blevdatum][rp]['metadata'][band] = tiffs[0].replace('tif','xml')
-# Get the metadata file. If WFI get the RIGHT file if processing was OPT
-								if not os.path.exists(xmlfile) and inst == 'WFI':
-									xmlfile = xmlfile.replace('_BAND','_RIGHT_BAND')
 								if os.path.exists(xmlfile):
 									activity['metadata'][band] = xmlfile
+							elif len(tiffs) > 1:
+# WFI may have more than 1 file ('LEFT', 'RIGHT' and '') per band. Get the ''
+								for wfifile in tiffs:
+									if wfifile.find('LEFT') == -1 and wfifile.find('RIGHT') == -1:
+										activity['files'][band] = filestructure[basicactivity['sat']][bym][bdrd][bpr][blevdatum][rp]['files'][band] = wfifile
+										xmlfile = filestructure[basicactivity['sat']][bym][bdrd][bpr][blevdatum][rp]['metadata'][band] = tiffs[0].replace('tif','xml')
+										if os.path.exists(xmlfile):
+											activity['metadata'][band] = xmlfile
+
 # if no file was found, log error and continue
 						if len(filestructure[basicactivity['sat']][bym][bdrd][bpr][blevdatum][rp]['files']) == 0:
 							del filestructure[basicactivity['sat']][bym][bdrd][bpr][blevdatum][rp]							
@@ -362,6 +371,8 @@ def positioning():
 		return json.dumps(basicactivity, indent=2)
 	updatePositioningActivity(basicactivity)
 	basicactivity['started'] = 0
+	basicactivity['missing'] = 0
+	basicactivity['total'] = 0
 	filestructure = traverse(basicactivity,xpositioning)
 	return json.dumps(basicactivity, indent=2)
 
